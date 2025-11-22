@@ -1,0 +1,15 @@
+# Perception AI Dependencies
+# Core
+numpy>=1.20.0
+scipy>=1.7.0
+
+# Deep Learning (optional but recommended)
+torch>=1.9.0
+torchvision>=0.10.0
+
+# Testing
+pytest>=6.0.0
+
+# Optional: for enhanced performance
+# opencv-python>=4.5.0
+# onnxruntime>=1.8.0  # For optimized inference

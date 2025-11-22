@@ -1,0 +1,3 @@
+# Placeholder for models directory
+# Trained models will be saved here with naming format:
+# {Grade} {DD-MM-YYYY} perception v{N}.pt

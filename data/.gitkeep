@@ -1,0 +1,6 @@
+# Placeholder for training data directory
+# Training data for object detector should be placed here
+#
+# Recommended datasets:
+# - VisDrone (https://github.com/VisDrone/VisDrone-Dataset)
+# - UAV123 (https://cemse.kaust.edu.sa/ivul/uav123)

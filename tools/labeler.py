@@ -115,6 +115,10 @@ class FriendlyLabeler:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Directory for images with boxes drawn on them
+        self.marked_dir = self.output_dir / "marked_images"
+        self.marked_dir.mkdir(parents=True, exist_ok=True)
+
         # Find images
         self.image_files = self._find_images()
         self.current_index = 0
@@ -217,8 +221,8 @@ class FriendlyLabeler:
 3. Press SPACE for next image
 4. Right-click to delete a box
 
-That's it! Your work saves
-automatically.
+Your work auto-saves! Marked
+images go to: labels/marked_images/
         """
         ttk.Label(help_frame, text=help_text.strip(),
                  font=('Arial', 10), justify=tk.LEFT).pack()
@@ -300,6 +304,8 @@ automatically.
         export_frame = ttk.LabelFrame(left, text=" 📤 Export ", padding=10)
         export_frame.pack(fill=tk.X)
 
+        ttk.Button(export_frame, text="🖼️ Save All Marked Images",
+                  command=self._export_all_marked_images).pack(fill=tk.X, pady=2)
         ttk.Button(export_frame, text="📁 Export for Training (YOLO)",
                   command=self._export_yolo).pack(fill=tk.X, pady=2)
 
@@ -585,12 +591,20 @@ automatically.
     def _next_and_save(self):
         """Save and go to next image."""
         self._save_annotations()
-        self.status_var.set("💾 Saved!")
+        # Also save marked image if there are boxes
+        if self.image_files:
+            filename = self.image_files[self.current_index].name
+            self._save_marked_image(filename)
+        self.status_var.set("💾 Saved + marked image!")
         self._next_image()
 
     def _save_now(self):
         """Save immediately."""
         self._save_annotations()
+        # Also save marked image
+        if self.image_files:
+            filename = self.image_files[self.current_index].name
+            self._save_marked_image(filename)
         self.status_var.set("💾 Saved successfully!")
 
     def _undo(self):
@@ -647,6 +661,92 @@ automatically.
         # Update nav buttons
         self.prev_btn.state(['!disabled'] if self.current_index > 0 else ['disabled'])
         self.next_btn.state(['!disabled'] if self.current_index < total_images - 1 else ['disabled'])
+
+    def _save_marked_image(self, filename: str) -> bool:
+        """
+        Save a copy of the image with boxes drawn on it.
+
+        Args:
+            filename: The image filename
+
+        Returns:
+            True if saved successfully
+        """
+        if filename not in self.annotations:
+            return False
+
+        ann = self.annotations[filename]
+        if not ann.boxes:
+            return False
+
+        # Find the original image
+        img_path = self.image_dir / filename
+        if not img_path.exists():
+            return False
+
+        try:
+            # Open original image
+            img = Image.open(img_path).convert('RGB')
+            draw = ImageDraw.Draw(img)
+
+            # Draw each box
+            for box in ann.boxes:
+                cls = CLASSES[box.class_id]
+                color = cls['color']
+
+                # Draw rectangle (thick border)
+                for i in range(3):  # 3px thick
+                    draw.rectangle(
+                        [box.x1 + i, box.y1 + i, box.x2 - i, box.y2 - i],
+                        outline=color
+                    )
+
+                # Draw label background
+                label = f" {cls['name']} "
+                # Approximate text size
+                text_w = len(label) * 8
+                text_h = 16
+                draw.rectangle(
+                    [box.x1, box.y1 - text_h - 4, box.x1 + text_w, box.y1],
+                    fill=color
+                )
+
+                # Draw label text
+                draw.text((box.x1 + 4, box.y1 - text_h - 2), label, fill='white')
+
+            # Save marked image
+            output_path = self.marked_dir / filename
+            img.save(output_path, quality=95)
+            return True
+
+        except Exception as e:
+            print(f"Error saving marked image {filename}: {e}")
+            return False
+
+    def _save_current_marked_image(self):
+        """Save marked version of current image."""
+        if not self.image_files:
+            return
+
+        filename = self.image_files[self.current_index].name
+        if self._save_marked_image(filename):
+            self.status_var.set(f"🖼️ Saved marked image to {self.marked_dir.name}/")
+
+    def _export_all_marked_images(self):
+        """Export all labeled images with boxes drawn on them."""
+        count = 0
+        for filename, ann in self.annotations.items():
+            if ann.boxes:
+                if self._save_marked_image(filename):
+                    count += 1
+
+        messagebox.showinfo(
+            "Marked Images Saved! 🖼️",
+            f"Saved {count} images with boxes drawn to:\n\n"
+            f"📁 {self.marked_dir}\n\n"
+            "These images show your labels visually!"
+        )
+        self.status_var.set(f"🖼️ Exported {count} marked images")
 
     def _export_yolo(self):
         """Export to YOLO format for training."""

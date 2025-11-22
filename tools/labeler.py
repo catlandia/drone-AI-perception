@@ -1,28 +1,15 @@
 #!/usr/bin/env python3
 """
-Perception AI - Image Labeling Tool
+Perception AI - Image Labeling Tool (Friendly Edition)
 
-A simple GUI tool for annotating aerial/drone images with bounding boxes.
-Makes it easy to create training data for the object detector.
+A simple, easy-to-use GUI for labeling drone/aerial images.
+Designed to be intuitive even for first-time users.
 
-Features:
-- Draw bounding boxes with mouse
-- Quick keyboard shortcuts for classes
-- Auto-save progress
-- Export to YOLO format (for training)
-- Track labeling progress
+Just run:
+    python tools/labeler.py
 
-Usage:
-    python tools/labeler.py --images path/to/images --output path/to/labels
-
-Controls:
-    Left Click + Drag : Draw bounding box
-    Right Click       : Delete nearest box
-    1-8              : Select class (tree, building, person, etc.)
-    A / D            : Previous / Next image
-    S                : Save current annotations
-    Space            : Next image (auto-save)
-    Q                : Quit
+Or use the launcher:
+    ./launch_labeler.sh
 """
 
 import os
@@ -33,39 +20,70 @@ from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional, Tuple
 
-try:
-    import tkinter as tk
-    from tkinter import ttk, filedialog, messagebox
-except ImportError:
-    print("Error: tkinter not found. Install with:")
-    print("  Ubuntu/Debian: sudo apt-get install python3-tk")
-    print("  Fedora: sudo dnf install python3-tkinter")
-    sys.exit(1)
+# Check dependencies before starting
+def check_dependencies():
+    """Check if required packages are installed."""
+    missing = []
 
-try:
-    from PIL import Image, ImageTk
-except ImportError:
-    print("Error: Pillow not found. Install with:")
-    print("  pip install Pillow")
-    sys.exit(1)
+    try:
+        import tkinter
+    except ImportError:
+        missing.append("tkinter")
+        print("=" * 50)
+        print("MISSING: tkinter (comes with Python)")
+        print("=" * 50)
+        print("\nInstall with:")
+        print("  Ubuntu/Debian: sudo apt-get install python3-tk")
+        print("  Fedora: sudo dnf install python3-tkinter")
+        print("  macOS: brew install python-tk")
+        print()
+
+    try:
+        from PIL import Image
+    except ImportError:
+        missing.append("Pillow")
+        print("=" * 50)
+        print("MISSING: Pillow (image library)")
+        print("=" * 50)
+        print("\nInstall with:")
+        print("  pip install Pillow")
+        print()
+
+    if missing:
+        print("Please install missing packages and try again.")
+        sys.exit(1)
+
+check_dependencies()
+
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from PIL import Image, ImageTk, ImageDraw
 
 
-# Object classes for drone perception
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+# Object classes - what you'll be labeling
 CLASSES = [
-    ("1", "tree", "#228B22"),       # Forest green
-    ("2", "building", "#808080"),   # Gray
-    ("3", "person", "#FF6347"),     # Tomato red
-    ("4", "vehicle", "#4169E1"),    # Royal blue
-    ("5", "pole", "#8B4513"),       # Saddle brown
-    ("6", "wire", "#FFD700"),       # Gold
-    ("7", "bird", "#FF69B4"),       # Hot pink
-    ("8", "unknown", "#9932CC"),    # Dark orchid
+    {"key": "1", "name": "tree",     "color": "#228B22", "icon": "🌲"},
+    {"key": "2", "name": "building", "color": "#708090", "icon": "🏢"},
+    {"key": "3", "name": "person",   "color": "#FF4444", "icon": "🚶"},
+    {"key": "4", "name": "vehicle",  "color": "#4169E1", "icon": "🚗"},
+    {"key": "5", "name": "pole",     "color": "#8B4513", "icon": "📍"},
+    {"key": "6", "name": "wire",     "color": "#FFD700", "icon": "〰️"},
+    {"key": "7", "name": "bird",     "color": "#FF69B4", "icon": "🐦"},
+    {"key": "8", "name": "unknown",  "color": "#9932CC", "icon": "❓"},
 ]
 
 
+# ============================================================
+# DATA CLASSES
+# ============================================================
+
 @dataclass
 class BoundingBox:
-    """A bounding box annotation."""
+    """A labeled bounding box."""
     x1: int
     y1: int
     x2: int
@@ -76,50 +94,55 @@ class BoundingBox:
 
 @dataclass
 class ImageAnnotation:
-    """Annotations for a single image."""
+    """All labels for one image."""
     filename: str
     width: int
     height: int
     boxes: List[BoundingBox] = field(default_factory=list)
 
 
-class LabelingTool:
-    """Main labeling application."""
+# ============================================================
+# MAIN APPLICATION
+# ============================================================
+
+class FriendlyLabeler:
+    """
+    A friendly, easy-to-use image labeling tool.
+    """
 
     def __init__(self, image_dir: str, output_dir: str):
         self.image_dir = Path(image_dir)
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Find all images
+        # Find images
         self.image_files = self._find_images()
-        if not self.image_files:
-            messagebox.showerror("Error", f"No images found in {image_dir}")
-            sys.exit(1)
-
         self.current_index = 0
-        self.current_class = 0  # tree by default
+        self.current_class = 0
         self.annotations: Dict[str, ImageAnnotation] = {}
 
         # Drawing state
         self.drawing = False
         self.start_x = 0
         self.start_y = 0
-        self.current_rect = None
+        self.temp_rect = None
 
-        # Display scaling
+        # Display
         self.scale = 1.0
         self.offset_x = 0
         self.offset_y = 0
 
-        # Load existing annotations
-        self._load_all_annotations()
+        # Undo stack
+        self.undo_stack: List[Tuple[str, BoundingBox]] = []
 
-        # Setup GUI
-        self._setup_gui()
+        # Load existing work
+        self._load_annotations()
+
+        # Build the GUI
+        self._create_gui()
 
     def _find_images(self) -> List[Path]:
-        """Find all image files in directory."""
+        """Find all images in the folder."""
         extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.gif'}
         images = []
         for ext in extensions:
@@ -127,8 +150,8 @@ class LabelingTool:
             images.extend(self.image_dir.glob(f'*{ext.upper()}'))
         return sorted(images)
 
-    def _load_all_annotations(self):
-        """Load existing annotations from output directory."""
+    def _load_annotations(self):
+        """Load any existing labels."""
         json_file = self.output_dir / "annotations.json"
         if json_file.exists():
             try:
@@ -142,12 +165,11 @@ class LabelingTool:
                         height=ann_data['height'],
                         boxes=boxes
                     )
-                print(f"Loaded {len(self.annotations)} existing annotations")
             except Exception as e:
-                print(f"Warning: Could not load annotations: {e}")
+                print(f"Note: Could not load previous annotations: {e}")
 
-    def _save_all_annotations(self):
-        """Save all annotations to JSON file."""
+    def _save_annotations(self):
+        """Save all labels to file."""
         json_file = self.output_dir / "annotations.json"
         data = {}
         for filename, ann in self.annotations.items():
@@ -160,152 +182,203 @@ class LabelingTool:
         with open(json_file, 'w') as f:
             json.dump(data, f, indent=2)
 
-    def _export_yolo_format(self):
-        """Export annotations in YOLO format."""
-        yolo_dir = self.output_dir / "yolo"
-        yolo_dir.mkdir(exist_ok=True)
-
-        for filename, ann in self.annotations.items():
-            if not ann.boxes:
-                continue
-
-            # YOLO format: class_id x_center y_center width height (normalized)
-            label_file = yolo_dir / (Path(filename).stem + ".txt")
-            with open(label_file, 'w') as f:
-                for box in ann.boxes:
-                    x_center = ((box.x1 + box.x2) / 2) / ann.width
-                    y_center = ((box.y1 + box.y2) / 2) / ann.height
-                    width = (box.x2 - box.x1) / ann.width
-                    height = (box.y2 - box.y1) / ann.height
-                    f.write(f"{box.class_id} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}\n")
-
-        # Write classes file
-        with open(yolo_dir / "classes.txt", 'w') as f:
-            for _, name, _ in CLASSES:
-                f.write(f"{name}\n")
-
-        messagebox.showinfo("Export Complete",
-                          f"Exported {len(self.annotations)} annotations to YOLO format\n{yolo_dir}")
-
-    def _setup_gui(self):
-        """Setup the GUI."""
+    def _create_gui(self):
+        """Build the user interface."""
         self.root = tk.Tk()
-        self.root.title("Perception AI - Image Labeler")
-        self.root.geometry("1200x800")
+        self.root.title("🏷️ Perception AI - Image Labeler")
+        self.root.geometry("1300x850")
+        self.root.configure(bg='#2b2b2b')
 
-        # Main frame
-        main_frame = ttk.Frame(self.root)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # Style
+        style = ttk.Style()
+        style.theme_use('clam')
+        style.configure('TFrame', background='#2b2b2b')
+        style.configure('TLabel', background='#2b2b2b', foreground='white')
+        style.configure('TButton', padding=10)
+        style.configure('Header.TLabel', font=('Arial', 14, 'bold'))
+        style.configure('Big.TButton', font=('Arial', 12), padding=15)
 
-        # Left panel - controls
-        left_panel = ttk.Frame(main_frame, width=200)
-        left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
+        # Main container
+        main = ttk.Frame(self.root)
+        main.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Class selection
-        ttk.Label(left_panel, text="Object Class:", font=('Arial', 12, 'bold')).pack(pady=(10, 5))
+        # ========== LEFT PANEL ==========
+        left = ttk.Frame(main, width=280)
+        left.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+        left.pack_propagate(False)
+
+        # --- Welcome / Help Section ---
+        help_frame = ttk.LabelFrame(left, text=" 📖 How to Use ", padding=10)
+        help_frame.pack(fill=tk.X, pady=(0, 10))
+
+        help_text = """
+1. Click & drag to draw a box
+2. Press 1-8 to pick object type
+3. Press SPACE for next image
+4. Right-click to delete a box
+
+That's it! Your work saves
+automatically.
+        """
+        ttk.Label(help_frame, text=help_text.strip(),
+                 font=('Arial', 10), justify=tk.LEFT).pack()
+
+        # --- Class Selection ---
+        class_frame = ttk.LabelFrame(left, text=" 🏷️ What are you labeling? ", padding=10)
+        class_frame.pack(fill=tk.X, pady=(0, 10))
 
         self.class_var = tk.IntVar(value=0)
-        for i, (key, name, color) in enumerate(CLASSES):
-            frame = ttk.Frame(left_panel)
-            frame.pack(fill=tk.X, pady=2)
+        self.class_buttons = []
 
-            rb = ttk.Radiobutton(frame, text=f"[{key}] {name}",
-                                variable=self.class_var, value=i,
-                                command=self._on_class_change)
-            rb.pack(side=tk.LEFT)
+        for i, cls in enumerate(CLASSES):
+            btn_frame = ttk.Frame(class_frame)
+            btn_frame.pack(fill=tk.X, pady=2)
 
-            # Color indicator
-            canvas = tk.Canvas(frame, width=20, height=20, bg=color,
-                             highlightthickness=1)
-            canvas.pack(side=tk.RIGHT, padx=5)
+            # Color box
+            color_label = tk.Label(btn_frame, text="  ", bg=cls['color'],
+                                  width=2, relief=tk.RAISED)
+            color_label.pack(side=tk.LEFT, padx=(0, 5))
 
-        # Separator
-        ttk.Separator(left_panel, orient='horizontal').pack(fill=tk.X, pady=10)
+            # Radio button with icon
+            rb = ttk.Radiobutton(
+                btn_frame,
+                text=f" [{cls['key']}]  {cls['icon']} {cls['name'].upper()}",
+                variable=self.class_var,
+                value=i,
+                command=lambda idx=i: self._select_class(idx)
+            )
+            rb.pack(side=tk.LEFT, fill=tk.X)
+            self.class_buttons.append(rb)
 
-        # Stats
-        ttk.Label(left_panel, text="Progress:", font=('Arial', 12, 'bold')).pack(pady=(10, 5))
-        self.progress_label = ttk.Label(left_panel, text="0 / 0 images")
-        self.progress_label.pack()
+        # --- Progress Section ---
+        progress_frame = ttk.LabelFrame(left, text=" 📊 Progress ", padding=10)
+        progress_frame.pack(fill=tk.X, pady=(0, 10))
 
-        self.boxes_label = ttk.Label(left_panel, text="0 boxes in image")
-        self.boxes_label.pack()
+        self.progress_text = tk.StringVar(value="Image 0 of 0")
+        ttk.Label(progress_frame, textvariable=self.progress_text,
+                 font=('Arial', 12, 'bold')).pack()
 
-        self.total_label = ttk.Label(left_panel, text="0 total boxes")
-        self.total_label.pack()
+        self.progress_bar = ttk.Progressbar(progress_frame, length=240, mode='determinate')
+        self.progress_bar.pack(pady=5)
 
-        # Progress bar
-        self.progress_bar = ttk.Progressbar(left_panel, length=180, mode='determinate')
-        self.progress_bar.pack(pady=10)
+        self.boxes_text = tk.StringVar(value="0 boxes drawn")
+        ttk.Label(progress_frame, textvariable=self.boxes_text).pack()
 
-        # Separator
-        ttk.Separator(left_panel, orient='horizontal').pack(fill=tk.X, pady=10)
+        self.total_text = tk.StringVar(value="0 total labels")
+        ttk.Label(progress_frame, textvariable=self.total_text).pack()
 
-        # Buttons
-        ttk.Button(left_panel, text="< Previous (A)", command=self._prev_image).pack(fill=tk.X, pady=2)
-        ttk.Button(left_panel, text="Next (D) >", command=self._next_image).pack(fill=tk.X, pady=2)
-        ttk.Button(left_panel, text="Save (S)", command=self._save_current).pack(fill=tk.X, pady=2)
-        ttk.Button(left_panel, text="Clear All Boxes", command=self._clear_boxes).pack(fill=tk.X, pady=2)
+        # --- Navigation Buttons ---
+        nav_frame = ttk.LabelFrame(left, text=" 🧭 Navigation ", padding=10)
+        nav_frame.pack(fill=tk.X, pady=(0, 10))
 
-        ttk.Separator(left_panel, orient='horizontal').pack(fill=tk.X, pady=10)
+        btn_row1 = ttk.Frame(nav_frame)
+        btn_row1.pack(fill=tk.X, pady=2)
 
-        ttk.Button(left_panel, text="Export YOLO Format", command=self._export_yolo_format).pack(fill=tk.X, pady=2)
+        self.prev_btn = ttk.Button(btn_row1, text="⬅️ Previous (A)",
+                                   command=self._prev_image, style='Big.TButton')
+        self.prev_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 5))
 
-        # Separator
-        ttk.Separator(left_panel, orient='horizontal').pack(fill=tk.X, pady=10)
+        self.next_btn = ttk.Button(btn_row1, text="Next (D) ➡️",
+                                   command=self._next_image, style='Big.TButton')
+        self.next_btn.pack(side=tk.LEFT, expand=True, fill=tk.X)
 
-        # Instructions
-        ttk.Label(left_panel, text="Controls:", font=('Arial', 10, 'bold')).pack(pady=(10, 5))
-        instructions = """
-Left Click+Drag: Draw box
-Right Click: Delete box
-1-8: Select class
-A/D: Prev/Next image
-Space: Next (auto-save)
-S: Save
-Q: Quit
-"""
-        ttk.Label(left_panel, text=instructions, justify=tk.LEFT).pack()
+        ttk.Button(nav_frame, text="⏭️ NEXT + SAVE (SPACE)",
+                  command=self._next_and_save, style='Big.TButton').pack(fill=tk.X, pady=(10, 0))
+
+        # --- Actions ---
+        action_frame = ttk.LabelFrame(left, text=" ⚡ Actions ", padding=10)
+        action_frame.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Button(action_frame, text="↩️ Undo Last Box (Ctrl+Z)",
+                  command=self._undo).pack(fill=tk.X, pady=2)
+        ttk.Button(action_frame, text="🗑️ Clear All Boxes",
+                  command=self._clear_boxes).pack(fill=tk.X, pady=2)
+        ttk.Button(action_frame, text="💾 Save Now (S)",
+                  command=self._save_now).pack(fill=tk.X, pady=2)
+
+        # --- Export ---
+        export_frame = ttk.LabelFrame(left, text=" 📤 Export ", padding=10)
+        export_frame.pack(fill=tk.X)
+
+        ttk.Button(export_frame, text="📁 Export for Training (YOLO)",
+                  command=self._export_yolo).pack(fill=tk.X, pady=2)
+
+        # ========== RIGHT PANEL (Image) ==========
+        right = ttk.Frame(main)
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Image filename
+        self.filename_var = tk.StringVar(value="No image loaded")
+        filename_label = ttk.Label(right, textvariable=self.filename_var,
+                                  font=('Arial', 11), anchor=tk.CENTER)
+        filename_label.pack(fill=tk.X)
 
         # Canvas for image
-        canvas_frame = ttk.Frame(main_frame)
-        canvas_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        canvas_frame = ttk.Frame(right)
+        canvas_frame.pack(fill=tk.BOTH, expand=True, pady=5)
 
-        self.canvas = tk.Canvas(canvas_frame, bg='#2b2b2b', cursor='crosshair')
+        self.canvas = tk.Canvas(canvas_frame, bg='#1a1a1a',
+                               highlightthickness=2, highlightbackground='#444')
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
-        # Filename label
-        self.filename_label = ttk.Label(canvas_frame, text="", font=('Arial', 10))
-        self.filename_label.pack()
+        # Status bar
+        self.status_var = tk.StringVar(value="Ready! Draw boxes around obstacles.")
+        status_bar = ttk.Label(right, textvariable=self.status_var,
+                              font=('Arial', 10), anchor=tk.W,
+                              foreground='#888')
+        status_bar.pack(fill=tk.X)
 
-        # Bind events
-        self.canvas.bind('<Button-1>', self._on_mouse_down)
-        self.canvas.bind('<B1-Motion>', self._on_mouse_drag)
-        self.canvas.bind('<ButtonRelease-1>', self._on_mouse_up)
+        # ========== BINDINGS ==========
+        self.canvas.bind('<Button-1>', self._on_click)
+        self.canvas.bind('<B1-Motion>', self._on_drag)
+        self.canvas.bind('<ButtonRelease-1>', self._on_release)
         self.canvas.bind('<Button-3>', self._on_right_click)
         self.canvas.bind('<Configure>', self._on_resize)
 
         self.root.bind('<Key>', self._on_key)
+        self.root.bind('<Control-z>', lambda e: self._undo())
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Load first image
-        self._load_current_image()
+        if self.image_files:
+            self._load_image()
+        else:
+            self._show_no_images()
+
         self._update_stats()
 
-    def _on_class_change(self):
-        """Handle class selection change."""
-        self.current_class = self.class_var.get()
+    def _show_no_images(self):
+        """Show message when no images found."""
+        self.canvas.delete('all')
+        self.canvas.create_text(
+            400, 300,
+            text="📂 No images found!\n\n"
+                 "Add images to:\n"
+                 f"{self.image_dir}\n\n"
+                 "Or create samples:\n"
+                 "python tools/image_collector.py sample",
+            font=('Arial', 14),
+            fill='white',
+            justify=tk.CENTER
+        )
 
-    def _load_current_image(self):
+    def _select_class(self, idx: int):
+        """Select object class."""
+        self.current_class = idx
+        cls = CLASSES[idx]
+        self.status_var.set(f"Selected: {cls['icon']} {cls['name'].upper()} - Draw a box!")
+
+    def _load_image(self):
         """Load and display current image."""
         if not self.image_files:
             return
 
-        image_path = self.image_files[self.current_index]
-        self.current_image = Image.open(image_path)
+        path = self.image_files[self.current_index]
+        self.current_image = Image.open(path)
         self.image_width, self.image_height = self.current_image.size
 
-        # Initialize annotation if not exists
-        filename = image_path.name
+        # Initialize annotation
+        filename = path.name
         if filename not in self.annotations:
             self.annotations[filename] = ImageAnnotation(
                 filename=filename,
@@ -315,40 +388,39 @@ Q: Quit
             )
 
         self._display_image()
-        self.filename_label.config(text=f"{image_path.name} ({self.image_width}x{self.image_height})")
+        self.filename_var.set(f"📷 {path.name}  ({self.image_width} × {self.image_height})")
 
     def _display_image(self):
-        """Display image on canvas with scaling."""
-        canvas_width = self.canvas.winfo_width()
-        canvas_height = self.canvas.winfo_height()
-
-        if canvas_width <= 1 or canvas_height <= 1:
+        """Render image on canvas."""
+        if not hasattr(self, 'current_image'):
             return
 
-        # Calculate scale to fit
-        scale_x = canvas_width / self.image_width
-        scale_y = canvas_height / self.image_height
-        self.scale = min(scale_x, scale_y, 1.0)  # Don't upscale
+        cw = self.canvas.winfo_width()
+        ch = self.canvas.winfo_height()
+        if cw <= 1 or ch <= 1:
+            return
 
-        new_width = int(self.image_width * self.scale)
-        new_height = int(self.image_height * self.scale)
+        # Scale to fit
+        scale_x = cw / self.image_width
+        scale_y = ch / self.image_height
+        self.scale = min(scale_x, scale_y, 1.0)
 
-        # Center image
-        self.offset_x = (canvas_width - new_width) // 2
-        self.offset_y = (canvas_height - new_height) // 2
+        new_w = int(self.image_width * self.scale)
+        new_h = int(self.image_height * self.scale)
 
-        # Resize and display
-        resized = self.current_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        self.offset_x = (cw - new_w) // 2
+        self.offset_y = (ch - new_h) // 2
+
+        resized = self.current_image.resize((new_w, new_h), Image.Resampling.LANCZOS)
         self.photo = ImageTk.PhotoImage(resized)
 
         self.canvas.delete('all')
         self.canvas.create_image(self.offset_x, self.offset_y, anchor=tk.NW, image=self.photo)
 
-        # Draw existing boxes
-        self._draw_boxes()
+        self._draw_all_boxes()
 
-    def _draw_boxes(self):
-        """Draw all bounding boxes for current image."""
+    def _draw_all_boxes(self):
+        """Draw all bounding boxes."""
         if not self.image_files:
             return
 
@@ -360,170 +432,204 @@ Q: Quit
             self._draw_box(box)
 
     def _draw_box(self, box: BoundingBox):
-        """Draw a single bounding box."""
-        # Convert to canvas coordinates
+        """Draw a single box with label."""
         x1 = int(box.x1 * self.scale) + self.offset_x
         y1 = int(box.y1 * self.scale) + self.offset_y
         x2 = int(box.x2 * self.scale) + self.offset_x
         y2 = int(box.y2 * self.scale) + self.offset_y
 
-        color = CLASSES[box.class_id][2]
+        cls = CLASSES[box.class_id]
+        color = cls['color']
 
-        # Draw rectangle
-        self.canvas.create_rectangle(x1, y1, x2, y2, outline=color, width=2, tags='box')
+        # Box
+        self.canvas.create_rectangle(x1, y1, x2, y2, outline=color, width=3, tags='box')
 
-        # Draw label background
-        self.canvas.create_rectangle(x1, y1-20, x1+80, y1, fill=color, outline=color, tags='box')
-
-        # Draw label text
-        self.canvas.create_text(x1+40, y1-10, text=box.class_name,
-                               fill='white', font=('Arial', 10, 'bold'), tags='box')
+        # Label background
+        label_text = f" {cls['icon']} {box.class_name} "
+        self.canvas.create_rectangle(x1, y1-25, x1+100, y1, fill=color, outline=color, tags='box')
+        self.canvas.create_text(x1+50, y1-12, text=label_text, fill='white',
+                               font=('Arial', 10, 'bold'), tags='box')
 
     def _canvas_to_image(self, cx: int, cy: int) -> Tuple[int, int]:
-        """Convert canvas coordinates to image coordinates."""
+        """Convert canvas coords to image coords."""
         ix = int((cx - self.offset_x) / self.scale)
         iy = int((cy - self.offset_y) / self.scale)
-        # Clamp to image bounds
         ix = max(0, min(ix, self.image_width - 1))
         iy = max(0, min(iy, self.image_height - 1))
         return ix, iy
 
-    def _on_mouse_down(self, event):
+    def _on_click(self, event):
         """Start drawing box."""
+        if not self.image_files:
+            return
         self.drawing = True
         self.start_x, self.start_y = self._canvas_to_image(event.x, event.y)
+        self.status_var.set("Drawing... release to finish")
 
-    def _on_mouse_drag(self, event):
+    def _on_drag(self, event):
         """Update box while dragging."""
         if not self.drawing:
             return
 
-        # Delete previous temp rectangle
-        if self.current_rect:
-            self.canvas.delete(self.current_rect)
+        if self.temp_rect:
+            self.canvas.delete(self.temp_rect)
 
         end_x, end_y = self._canvas_to_image(event.x, event.y)
 
-        # Draw temp rectangle
         x1 = int(min(self.start_x, end_x) * self.scale) + self.offset_x
         y1 = int(min(self.start_y, end_y) * self.scale) + self.offset_y
         x2 = int(max(self.start_x, end_x) * self.scale) + self.offset_x
         y2 = int(max(self.start_y, end_y) * self.scale) + self.offset_y
 
-        color = CLASSES[self.current_class][2]
-        self.current_rect = self.canvas.create_rectangle(
-            x1, y1, x2, y2, outline=color, width=2, dash=(4, 4)
+        color = CLASSES[self.current_class]['color']
+        self.temp_rect = self.canvas.create_rectangle(
+            x1, y1, x2, y2, outline=color, width=2, dash=(5, 5)
         )
 
-    def _on_mouse_up(self, event):
+    def _on_release(self, event):
         """Finish drawing box."""
         if not self.drawing:
             return
-
         self.drawing = False
-        if self.current_rect:
-            self.canvas.delete(self.current_rect)
-            self.current_rect = None
+
+        if self.temp_rect:
+            self.canvas.delete(self.temp_rect)
+            self.temp_rect = None
 
         end_x, end_y = self._canvas_to_image(event.x, event.y)
 
-        # Create bounding box (ensure x1 < x2, y1 < y2)
         x1, x2 = min(self.start_x, end_x), max(self.start_x, end_x)
         y1, y2 = min(self.start_y, end_y), max(self.start_y, end_y)
 
-        # Minimum size check
-        if x2 - x1 < 10 or y2 - y1 < 10:
+        # Too small?
+        if x2 - x1 < 15 or y2 - y1 < 15:
+            self.status_var.set("Box too small - try again!")
             return
 
+        cls = CLASSES[self.current_class]
         box = BoundingBox(
             x1=x1, y1=y1, x2=x2, y2=y2,
             class_id=self.current_class,
-            class_name=CLASSES[self.current_class][1]
+            class_name=cls['name']
         )
 
-        # Add to annotations
         filename = self.image_files[self.current_index].name
         self.annotations[filename].boxes.append(box)
+        self.undo_stack.append((filename, box))
 
-        # Redraw
         self._display_image()
         self._update_stats()
+        self.status_var.set(f"✅ Added {cls['icon']} {cls['name']}! Draw more or press SPACE for next image.")
 
     def _on_right_click(self, event):
-        """Delete nearest box."""
-        ix, iy = self._canvas_to_image(event.x, event.y)
+        """Delete box under cursor."""
+        if not self.image_files:
+            return
 
+        ix, iy = self._canvas_to_image(event.x, event.y)
         filename = self.image_files[self.current_index].name
+
         if filename not in self.annotations:
             return
 
-        # Find box containing click point
         boxes = self.annotations[filename].boxes
         for i, box in enumerate(boxes):
             if box.x1 <= ix <= box.x2 and box.y1 <= iy <= box.y2:
-                boxes.pop(i)
+                removed = boxes.pop(i)
                 self._display_image()
                 self._update_stats()
+                self.status_var.set(f"🗑️ Deleted {removed.class_name}")
                 return
 
+        self.status_var.set("No box under cursor")
+
     def _on_resize(self, event):
-        """Handle canvas resize."""
+        """Handle window resize."""
         if hasattr(self, 'current_image'):
             self._display_image()
 
     def _on_key(self, event):
         """Handle keyboard input."""
         key = event.keysym.lower()
+        char = event.char
 
-        # Number keys for class selection
-        if event.char in '12345678':
-            idx = int(event.char) - 1
+        # Number keys 1-8 for class selection
+        if char in '12345678':
+            idx = int(char) - 1
             self.class_var.set(idx)
-            self.current_class = idx
+            self._select_class(idx)
 
-        # Navigation
         elif key == 'a':
             self._prev_image()
-        elif key == 'd' or key == 'space':
-            self._save_current()
+        elif key == 'd':
             self._next_image()
+        elif key == 'space':
+            self._next_and_save()
         elif key == 's':
-            self._save_current()
-        elif key == 'q':
-            self._on_close()
+            self._save_now()
 
     def _prev_image(self):
         """Go to previous image."""
         if self.current_index > 0:
             self.current_index -= 1
-            self._load_current_image()
+            self._load_image()
             self._update_stats()
 
     def _next_image(self):
         """Go to next image."""
         if self.current_index < len(self.image_files) - 1:
             self.current_index += 1
-            self._load_current_image()
+            self._load_image()
             self._update_stats()
 
-    def _save_current(self):
-        """Save current annotations."""
-        self._save_all_annotations()
-        print(f"Saved annotations for {len(self.annotations)} images")
+    def _next_and_save(self):
+        """Save and go to next image."""
+        self._save_annotations()
+        self.status_var.set("💾 Saved!")
+        self._next_image()
+
+    def _save_now(self):
+        """Save immediately."""
+        self._save_annotations()
+        self.status_var.set("💾 Saved successfully!")
+
+    def _undo(self):
+        """Undo last box."""
+        if not self.undo_stack:
+            self.status_var.set("Nothing to undo")
+            return
+
+        filename, box = self.undo_stack.pop()
+        if filename in self.annotations:
+            boxes = self.annotations[filename].boxes
+            if box in boxes:
+                boxes.remove(box)
+
+        self._display_image()
+        self._update_stats()
+        self.status_var.set(f"↩️ Undid {box.class_name}")
 
     def _clear_boxes(self):
         """Clear all boxes from current image."""
+        if not self.image_files:
+            return
+
+        if not messagebox.askyesno("Clear All?", "Delete all boxes from this image?"):
+            return
+
         filename = self.image_files[self.current_index].name
         if filename in self.annotations:
             self.annotations[filename].boxes = []
-            self._display_image()
-            self._update_stats()
+
+        self._display_image()
+        self._update_stats()
+        self.status_var.set("🗑️ Cleared all boxes")
 
     def _update_stats(self):
-        """Update progress statistics."""
+        """Update progress display."""
         total_images = len(self.image_files)
-        labeled_images = sum(1 for ann in self.annotations.values() if ann.boxes)
-        total_boxes = sum(len(ann.boxes) for ann in self.annotations.values())
+        labeled = sum(1 for a in self.annotations.values() if a.boxes)
+        total_boxes = sum(len(a.boxes) for a in self.annotations.values())
 
         current_boxes = 0
         if self.image_files:
@@ -531,46 +637,99 @@ Q: Quit
             if filename in self.annotations:
                 current_boxes = len(self.annotations[filename].boxes)
 
-        self.progress_label.config(text=f"{self.current_index + 1} / {total_images} images")
-        self.boxes_label.config(text=f"{current_boxes} boxes in image")
-        self.total_label.config(text=f"{total_boxes} total boxes ({labeled_images} labeled)")
+        self.progress_text.set(f"Image {self.current_index + 1} of {total_images}")
+        self.boxes_text.set(f"📦 {current_boxes} boxes on this image")
+        self.total_text.set(f"📊 {total_boxes} total labels ({labeled} images done)")
 
-        progress = (labeled_images / total_images * 100) if total_images > 0 else 0
-        self.progress_bar['value'] = progress
+        if total_images > 0:
+            self.progress_bar['value'] = (labeled / total_images) * 100
+
+        # Update nav buttons
+        self.prev_btn.state(['!disabled'] if self.current_index > 0 else ['disabled'])
+        self.next_btn.state(['!disabled'] if self.current_index < total_images - 1 else ['disabled'])
+
+    def _export_yolo(self):
+        """Export to YOLO format for training."""
+        yolo_dir = self.output_dir / "yolo"
+        yolo_dir.mkdir(exist_ok=True)
+
+        count = 0
+        for filename, ann in self.annotations.items():
+            if not ann.boxes:
+                continue
+
+            label_file = yolo_dir / (Path(filename).stem + ".txt")
+            with open(label_file, 'w') as f:
+                for box in ann.boxes:
+                    x_center = ((box.x1 + box.x2) / 2) / ann.width
+                    y_center = ((box.y1 + box.y2) / 2) / ann.height
+                    width = (box.x2 - box.x1) / ann.width
+                    height = (box.y2 - box.y1) / ann.height
+                    f.write(f"{box.class_id} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}\n")
+            count += 1
+
+        # Classes file
+        with open(yolo_dir / "classes.txt", 'w') as f:
+            for cls in CLASSES:
+                f.write(f"{cls['name']}\n")
+
+        messagebox.showinfo(
+            "Export Complete! 🎉",
+            f"Exported {count} labeled images to:\n{yolo_dir}\n\n"
+            "Files created:\n"
+            "• One .txt file per image\n"
+            "• classes.txt with class names\n\n"
+            "Ready for training!"
+        )
 
     def _on_close(self):
         """Handle window close."""
-        if messagebox.askyesno("Save", "Save annotations before closing?"):
-            self._save_all_annotations()
+        if messagebox.askyesno("Save Before Exit?", "Save your work before closing?"):
+            self._save_annotations()
         self.root.destroy()
 
     def run(self):
         """Start the application."""
-        print(f"Loaded {len(self.image_files)} images from {self.image_dir}")
-        print("Starting labeling tool...")
+        print(f"Loaded {len(self.image_files)} images")
+        print("Starting labeler...")
         self.root.mainloop()
 
 
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
 def main():
-    parser = argparse.ArgumentParser(description="Perception AI Image Labeling Tool")
-    parser.add_argument('--images', '-i', type=str, default='data/images',
-                       help='Directory containing images to label')
-    parser.add_argument('--output', '-o', type=str, default='data/labels',
-                       help='Directory to save annotations')
+    parser = argparse.ArgumentParser(
+        description="🏷️ Perception AI - Image Labeling Tool",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python tools/labeler.py
+  python tools/labeler.py --images my_photos --output my_labels
+
+Controls:
+  Left Click + Drag  = Draw bounding box
+  Right Click        = Delete box
+  1-8                = Select object class
+  SPACE              = Save & next image
+  A / D              = Previous / Next
+  Ctrl+Z             = Undo
+        """
+    )
+    parser.add_argument('--images', '-i', default='data/images',
+                       help='Folder with images (default: data/images)')
+    parser.add_argument('--output', '-o', default='data/labels',
+                       help='Folder for labels (default: data/labels)')
+
     args = parser.parse_args()
 
-    # Create sample images directory if it doesn't exist
-    images_dir = Path(args.images)
-    if not images_dir.exists():
-        images_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Created images directory: {images_dir}")
-        print("Please add images to this directory and run again.")
-        print("\nTip: You can download drone datasets from:")
-        print("  - VisDrone: https://github.com/VisDrone/VisDrone-Dataset")
-        print("  - UAV123: https://cemse.kaust.edu.sa/ivul/uav123")
-        return
+    # Create directories
+    Path(args.images).mkdir(parents=True, exist_ok=True)
+    Path(args.output).mkdir(parents=True, exist_ok=True)
 
-    app = LabelingTool(args.images, args.output)
+    # Start app
+    app = FriendlyLabeler(args.images, args.output)
     app.run()
 
 

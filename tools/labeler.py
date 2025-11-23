@@ -135,6 +135,7 @@ class FriendlyLabeler:
         self.scale = 1.0
         self.offset_x = 0
         self.offset_y = 0
+        self._initialized = False  # Prevent double-load on startup
 
         # Undo stack
         self.undo_stack: List[Tuple[str, BoundingBox]] = []
@@ -345,13 +346,20 @@ images go to: labels/marked_images/
         self.root.bind('<Control-z>', lambda e: self._undo())
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # Load first image
+        # Load first image after window is ready
         if self.image_files:
             self._load_image()
+            # Schedule display after window is fully shown
+            self.root.after(100, self._initial_display)
         else:
             self._show_no_images()
 
         self._update_stats()
+
+    def _initial_display(self):
+        """Display image after window is ready."""
+        self._initialized = True
+        self._display_image()
 
     def _show_no_images(self):
         """Show message when no images found."""
@@ -551,7 +559,12 @@ images go to: labels/marked_images/
 
     def _on_resize(self, event):
         """Handle window resize."""
-        if hasattr(self, 'current_image'):
+        if not self._initialized:
+            # First resize after window appears - do initial load
+            if self.image_files and event.width > 100:
+                self._initialized = True
+                self._display_image()
+        elif hasattr(self, 'current_image'):
             self._display_image()
 
     def _on_key(self, event):

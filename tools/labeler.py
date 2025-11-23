@@ -119,6 +119,13 @@ class FriendlyLabeler:
         self.marked_dir = self.output_dir / "marked_images"
         self.marked_dir.mkdir(parents=True, exist_ok=True)
 
+        # Directory for cropped individual objects
+        self.crops_dir = self.output_dir / "cropped_objects"
+        self.crops_dir.mkdir(parents=True, exist_ok=True)
+
+        # Counter for each class type (for naming: tree_001, person_002, etc.)
+        self.class_counters = self._load_class_counters()
+
         # Find images
         self.image_files = self._find_images()
         self.current_index = 0
@@ -173,6 +180,78 @@ class FriendlyLabeler:
             except Exception as e:
                 print(f"Note: Could not load previous annotations: {e}")
 
+    def _load_class_counters(self) -> Dict[str, int]:
+        """Load or initialize counters for each class."""
+        counters = {cls['name']: 0 for cls in CLASSES}
+        counter_file = self.output_dir / "class_counters.json"
+
+        if counter_file.exists():
+            try:
+                with open(counter_file, 'r') as f:
+                    saved = json.load(f)
+                    counters.update(saved)
+            except:
+                pass
+
+        # Also scan existing cropped files to get accurate counts
+        if self.crops_dir.exists():
+            for cls in CLASSES:
+                name = cls['name']
+                pattern = f"{name}_*.jpg"
+                existing = list(self.crops_dir.glob(pattern))
+                if existing:
+                    # Find highest number
+                    max_num = 0
+                    for f in existing:
+                        try:
+                            num = int(f.stem.split('_')[-1])
+                            max_num = max(max_num, num)
+                        except:
+                            pass
+                    counters[name] = max(counters[name], max_num)
+
+        return counters
+
+    def _save_class_counters(self):
+        """Save class counters to file."""
+        counter_file = self.output_dir / "class_counters.json"
+        with open(counter_file, 'w') as f:
+            json.dump(self.class_counters, f)
+
+    def _crop_and_save_object(self, img_path: Path, box: BoundingBox) -> str:
+        """
+        Crop a single object from image and save it.
+
+        Returns the filename of saved crop (e.g., "tree_001.jpg")
+        """
+        try:
+            img = Image.open(img_path).convert('RGB')
+
+            # Crop the region (with small padding)
+            padding = 5
+            x1 = max(0, box.x1 - padding)
+            y1 = max(0, box.y1 - padding)
+            x2 = min(img.width, box.x2 + padding)
+            y2 = min(img.height, box.y2 + padding)
+
+            cropped = img.crop((x1, y1, x2, y2))
+
+            # Get next number for this class
+            class_name = box.class_name
+            self.class_counters[class_name] += 1
+            num = self.class_counters[class_name]
+
+            # Save with name like "tree_001.jpg"
+            crop_filename = f"{class_name}_{num:03d}.jpg"
+            crop_path = self.crops_dir / crop_filename
+            cropped.save(crop_path, quality=95)
+
+            return crop_filename
+
+        except Exception as e:
+            print(f"Error cropping object: {e}")
+            return ""
+
     def _save_annotations(self):
         """Save all labels to file."""
         json_file = self.output_dir / "annotations.json"
@@ -222,8 +301,8 @@ class FriendlyLabeler:
 3. Press SPACE for next image
 4. Right-click to delete a box
 
-Your work auto-saves! Marked
-images go to: labels/marked_images/
+Click "Crop All Objects" to save
+each box as: tree_001.jpg, etc.
         """
         ttk.Label(help_frame, text=help_text.strip(),
                  font=('Arial', 10), justify=tk.LEFT).pack()
@@ -305,6 +384,8 @@ images go to: labels/marked_images/
         export_frame = ttk.LabelFrame(left, text=" 📤 Export ", padding=10)
         export_frame.pack(fill=tk.X)
 
+        ttk.Button(export_frame, text="✂️ Crop All Objects",
+                  command=self._export_all_cropped_objects).pack(fill=tk.X, pady=2)
         ttk.Button(export_frame, text="🖼️ Save All Marked Images",
                   command=self._export_all_marked_images).pack(fill=tk.X, pady=2)
         ttk.Button(export_frame, text="📁 Export for Training (YOLO)",
@@ -760,6 +841,55 @@ images go to: labels/marked_images/
             "These images show your labels visually!"
         )
         self.status_var.set(f"🖼️ Exported {count} marked images")
+
+    def _export_all_cropped_objects(self):
+        """
+        Crop and save each labeled object as a separate image.
+
+        Creates files like:
+            tree_001.jpg, tree_002.jpg, ...
+            person_001.jpg, person_002.jpg, ...
+            building_001.jpg, ...
+        """
+        total_count = 0
+        class_counts = {cls['name']: 0 for cls in CLASSES}
+
+        for filename, ann in self.annotations.items():
+            if not ann.boxes:
+                continue
+
+            img_path = self.image_dir / filename
+            if not img_path.exists():
+                continue
+
+            for box in ann.boxes:
+                crop_name = self._crop_and_save_object(img_path, box)
+                if crop_name:
+                    total_count += 1
+                    class_counts[box.class_name] += 1
+
+        # Save updated counters
+        self._save_class_counters()
+
+        # Build summary
+        summary_lines = []
+        for cls in CLASSES:
+            name = cls['name']
+            count = class_counts[name]
+            if count > 0:
+                total = self.class_counters[name]
+                summary_lines.append(f"  {cls['icon']} {name}: {count} new (total: {total})")
+
+        summary = "\n".join(summary_lines) if summary_lines else "  No objects to export"
+
+        messagebox.showinfo(
+            "Objects Cropped! ✂️",
+            f"Saved {total_count} cropped objects to:\n\n"
+            f"📁 {self.crops_dir}\n\n"
+            f"Files created:\n{summary}\n\n"
+            "Each object saved as: type_001.jpg, type_002.jpg, etc."
+        )
+        self.status_var.set(f"✂️ Exported {total_count} cropped objects")
 
     def _export_yolo(self):
         """Export to YOLO format for training."""

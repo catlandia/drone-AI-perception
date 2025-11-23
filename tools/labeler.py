@@ -143,6 +143,7 @@ class FriendlyLabeler:
         self.offset_x = 0
         self.offset_y = 0
         self._initialized = False  # Prevent double-load on startup
+        self._displaying = False   # Prevent recursive display calls
 
         # Undo stack
         self.undo_stack: List[Tuple[str, BoundingBox]] = []
@@ -486,6 +487,9 @@ each box as: tree_001.jpg, etc.
 
     def _display_image(self):
         """Render image on canvas."""
+        # Prevent recursive calls (from resize events during display)
+        if self._displaying:
+            return
         if not hasattr(self, 'current_image'):
             return
 
@@ -494,27 +498,28 @@ each box as: tree_001.jpg, etc.
         if cw <= 1 or ch <= 1:
             return
 
-        # Scale to fit
-        scale_x = cw / self.image_width
-        scale_y = ch / self.image_height
-        self.scale = min(scale_x, scale_y, 1.0)
+        self._displaying = True
+        try:
+            # Scale to fit
+            scale_x = cw / self.image_width
+            scale_y = ch / self.image_height
+            self.scale = min(scale_x, scale_y, 1.0)
 
-        new_w = int(self.image_width * self.scale)
-        new_h = int(self.image_height * self.scale)
+            new_w = int(self.image_width * self.scale)
+            new_h = int(self.image_height * self.scale)
 
-        self.offset_x = (cw - new_w) // 2
-        self.offset_y = (ch - new_h) // 2
+            self.offset_x = (cw - new_w) // 2
+            self.offset_y = (ch - new_h) // 2
 
-        resized = self.current_image.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        self.photo = ImageTk.PhotoImage(resized)
+            resized = self.current_image.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            self.photo = ImageTk.PhotoImage(resized)
 
-        self.canvas.delete('all')
-        self.canvas.create_image(self.offset_x, self.offset_y, anchor=tk.NW, image=self.photo)
+            self.canvas.delete('all')
+            self.canvas.create_image(self.offset_x, self.offset_y, anchor=tk.NW, image=self.photo)
 
-        self._draw_all_boxes()
-
-        # Force canvas to update immediately
-        self.canvas.update_idletasks()
+            self._draw_all_boxes()
+        finally:
+            self._displaying = False
 
     def _draw_all_boxes(self):
         """Draw all bounding boxes."""
@@ -642,12 +647,14 @@ each box as: tree_001.jpg, etc.
 
     def _on_resize(self, event):
         """Handle window resize."""
+        # Don't do anything until fully initialized
         if not self._initialized:
-            # First resize after window appears - do initial load
-            if self.image_files and event.width > 100:
-                self._initialized = True
-                self._display_image()
-        elif hasattr(self, 'current_image'):
+            return
+        # Don't interfere with active display operation
+        if self._displaying:
+            return
+        # Redisplay if we have an image loaded
+        if hasattr(self, 'current_image'):
             self._display_image()
 
     def _on_key(self, event):

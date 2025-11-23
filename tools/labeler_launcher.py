@@ -44,15 +44,15 @@ class LauncherApp:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("🏷️ Perception AI - Image Labeler")
-        self.root.geometry("600x500")
+        self.root.geometry("600x580")
         self.root.resizable(False, False)
         self.root.configure(bg='#1e3a5f')
 
         # Center window
         self.root.update_idletasks()
         x = (self.root.winfo_screenwidth() - 600) // 2
-        y = (self.root.winfo_screenheight() - 500) // 2
-        self.root.geometry(f"600x500+{x}+{y}")
+        y = (self.root.winfo_screenheight() - 580) // 2
+        self.root.geometry(f"600x580+{x}+{y}")
 
         # Default paths
         self.script_dir = Path(__file__).parent.parent
@@ -201,7 +201,7 @@ class LauncherApp:
 
         # ===== BUTTONS =====
         buttons = tk.Frame(main, bg='#1e3a5f')
-        buttons.pack(fill=tk.X, pady=(10, 0))
+        buttons.pack(fill=tk.X, pady=(15, 10))
 
         # Sample images button
         tk.Button(
@@ -216,18 +216,21 @@ class LauncherApp:
             cursor='hand2'
         ).pack(side=tk.LEFT)
 
-        # Start button
-        tk.Button(
+        # Start button - BIG AND GREEN
+        start_btn = tk.Button(
             buttons,
-            text="▶️  Start Labeling",
+            text="▶️  START LABELING",
             command=self._start_labeling,
-            font=('Arial', 14, 'bold'),
+            font=('Arial', 16, 'bold'),
             bg='#28a745',
             fg='white',
-            padx=30,
-            pady=10,
-            cursor='hand2'
-        ).pack(side=tk.RIGHT)
+            padx=35,
+            pady=12,
+            cursor='hand2',
+            activebackground='#34c759',
+            activeforeground='white'
+        )
+        start_btn.pack(side=tk.RIGHT)
 
         # ===== FOOTER =====
         footer = tk.Frame(main, bg='#1e3a5f')

@@ -158,9 +158,19 @@ class FriendlyLabeler:
         """Find all images in the folder."""
         extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.gif'}
         images = []
+        seen = set()  # Track seen paths to avoid duplicates on case-insensitive filesystems
         for ext in extensions:
-            images.extend(self.image_dir.glob(f'*{ext}'))
-            images.extend(self.image_dir.glob(f'*{ext.upper()}'))
+            for img in self.image_dir.glob(f'*{ext}'):
+                # Use resolved path to detect duplicates
+                resolved = img.resolve()
+                if resolved not in seen:
+                    seen.add(resolved)
+                    images.append(img)
+            for img in self.image_dir.glob(f'*{ext.upper()}'):
+                resolved = img.resolve()
+                if resolved not in seen:
+                    seen.add(resolved)
+                    images.append(img)
         return sorted(images)
 
     def _load_annotations(self):
@@ -468,8 +478,18 @@ each box as: tree_001.jpg, etc.
         if not self.image_files:
             return
 
+        # Close previous image to free file handle
+        if hasattr(self, 'current_image') and self.current_image:
+            try:
+                self.current_image.close()
+            except:
+                pass
+
         path = self.image_files[self.current_index]
-        self.current_image = Image.open(path)
+        # Load and keep a copy so we can close the file handle
+        img = Image.open(path)
+        self.current_image = img.copy()
+        img.close()
         self.image_width, self.image_height = self.current_image.size
 
         # Initialize annotation
@@ -540,7 +560,11 @@ each box as: tree_001.jpg, etc.
         x2 = int(box.x2 * self.scale) + self.offset_x
         y2 = int(box.y2 * self.scale) + self.offset_y
 
-        cls = CLASSES[box.class_id]
+        # Bounds check for class_id
+        if 0 <= box.class_id < len(CLASSES):
+            cls = CLASSES[box.class_id]
+        else:
+            cls = CLASSES[-1]  # Default to "unknown"
         color = cls['color']
 
         # Box
@@ -554,15 +578,36 @@ each box as: tree_001.jpg, etc.
 
     def _canvas_to_image(self, cx: int, cy: int) -> Tuple[int, int]:
         """Convert canvas coords to image coords."""
+        # Guard against missing attributes or zero scale
+        if not hasattr(self, 'image_width') or not hasattr(self, 'image_height'):
+            return 0, 0
+        if self.scale <= 0:
+            return 0, 0
+
         ix = int((cx - self.offset_x) / self.scale)
         iy = int((cy - self.offset_y) / self.scale)
         ix = max(0, min(ix, self.image_width - 1))
         iy = max(0, min(iy, self.image_height - 1))
         return ix, iy
 
+    def _is_inside_image(self, cx: int, cy: int) -> bool:
+        """Check if canvas coords are inside the displayed image."""
+        if not hasattr(self, 'image_width') or self.scale <= 0:
+            return False
+        # Calculate image bounds on canvas
+        img_left = self.offset_x
+        img_top = self.offset_y
+        img_right = self.offset_x + int(self.image_width * self.scale)
+        img_bottom = self.offset_y + int(self.image_height * self.scale)
+        return img_left <= cx <= img_right and img_top <= cy <= img_bottom
+
     def _on_click(self, event):
         """Start drawing box."""
         if not self.image_files:
+            return
+        # Only start drawing if click is inside the image
+        if not self._is_inside_image(event.x, event.y):
+            self.status_var.set("Click inside the image to draw a box")
             return
         self.drawing = True
         self.start_x, self.start_y = self._canvas_to_image(event.x, event.y)
@@ -680,6 +725,8 @@ each box as: tree_001.jpg, etc.
     def _prev_image(self):
         """Go to previous image."""
         if self.current_index > 0:
+            # Auto-save before navigating
+            self._save_annotations()
             self.current_index -= 1
             self._load_image()
             self._update_stats()
@@ -687,6 +734,8 @@ each box as: tree_001.jpg, etc.
     def _next_image(self):
         """Go to next image."""
         if self.current_index < len(self.image_files) - 1:
+            # Auto-save before navigating
+            self._save_annotations()
             self.current_index += 1
             self._load_image()
             self._update_stats()
@@ -722,9 +771,16 @@ each box as: tree_001.jpg, etc.
             if box in boxes:
                 boxes.remove(box)
 
-        self._display_image()
-        self._update_stats()
-        self.status_var.set(f"↩️ Undid {box.class_name}")
+        # Check if the undo was for the current image
+        current_filename = self.image_files[self.current_index].name if self.image_files else ""
+        if filename == current_filename:
+            self._display_image()
+            self._update_stats()
+            self.status_var.set(f"↩️ Undid {box.class_name}")
+        else:
+            # Undo was for a different image
+            self._update_stats()
+            self.status_var.set(f"↩️ Undid {box.class_name} from {filename}")
 
     def _clear_boxes(self):
         """Clear all boxes from current image."""
@@ -794,7 +850,11 @@ each box as: tree_001.jpg, etc.
 
             # Draw each box
             for box in ann.boxes:
-                cls = CLASSES[box.class_id]
+                # Bounds check for class_id
+                if 0 <= box.class_id < len(CLASSES):
+                    cls = CLASSES[box.class_id]
+                else:
+                    cls = CLASSES[-1]  # Default to "unknown"
                 color = cls['color']
 
                 # Draw rectangle (thick border)
@@ -817,9 +877,15 @@ each box as: tree_001.jpg, etc.
                 # Draw label text
                 draw.text((box.x1 + 4, box.y1 - text_h - 2), label, fill='white')
 
-            # Save marked image
+            # Save marked image (preserve format based on extension)
             output_path = self.marked_dir / filename
-            img.save(output_path, quality=95)
+            ext = Path(filename).suffix.lower()
+            if ext in ('.jpg', '.jpeg'):
+                img.save(output_path, 'JPEG', quality=95)
+            elif ext == '.png':
+                img.save(output_path, 'PNG')
+            else:
+                img.save(output_path, quality=95)
             return True
 
         except Exception as e:

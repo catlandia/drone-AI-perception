@@ -427,20 +427,19 @@ each box as: tree_001.jpg, etc.
         self.root.bind('<Control-z>', lambda e: self._undo())
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # Load first image after window is ready
+        # Load first image after window is fully ready
         if self.image_files:
-            self._load_image()
-            # Schedule display after window is fully shown
-            self.root.after(100, self._initial_display)
+            self.root.after(150, self._initial_load)
         else:
             self._show_no_images()
 
         self._update_stats()
 
-    def _initial_display(self):
-        """Display image after window is ready."""
+    def _initial_load(self):
+        """Load and display first image after window is ready."""
         self._initialized = True
-        self._display_image()
+        self._load_image()
+        self._update_stats()
 
     def _show_no_images(self):
         """Show message when no images found."""
@@ -513,6 +512,9 @@ each box as: tree_001.jpg, etc.
         self.canvas.create_image(self.offset_x, self.offset_y, anchor=tk.NW, image=self.photo)
 
         self._draw_all_boxes()
+
+        # Force canvas to update immediately
+        self.canvas.update_idletasks()
 
     def _draw_all_boxes(self):
         """Draw all bounding boxes."""
